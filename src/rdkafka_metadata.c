@@ -889,6 +889,32 @@ rd_kafka_metadata_refresh_topics (rd_kafka_t *rk, rd_kafka_broker_t *rkb,
 
         rd_kafka_wrlock(rk);
 
+        rd_list_init(&q_topics, rd_list_cnt(topics), rd_free);
+        if (!force) {
+                /* Hint cache of upcoming MetadataRequest and filter
+                * out any topics that are already being requested.
+                * q_topics will contain remaining topics to query. */
+                rd_kafka_metadata_cache_hint(rk, topics, &q_topics,
+                                     RD_KAFKA_RESP_ERR__WAIT_CACHE,
+                                     rd_false/*dont replace*/);
+
+                if (rd_list_cnt(&q_topics) == 0) {
+                        rd_kafka_wrunlock(rk);
+
+                        /* No topics need new query. */
+                        rd_kafka_dbg(rk, METADATA, "METADATA",
+                         "Skipping metadata refresh of "
+                         "%d topic(s): %s: "
+                         "already being requested",
+                         rd_list_cnt(topics), reason);
+                        rd_list_destroy(&q_topics);
+                        return RD_KAFKA_RESP_ERR_NO_ERROR;
+                }
+        } else {
+                rd_list_copy_to(&q_topics, topics, rd_list_string_copy, NULL);
+        }
+
+
         if (!rkb) {
                 if (!(rkb = rd_kafka_broker_any_usable(rk, RD_POLL_NOWAIT,
                                                        RD_DONT_LOCK, 0,
@@ -911,35 +937,7 @@ rd_kafka_metadata_refresh_topics (rd_kafka_t *rk, rd_kafka_broker_t *rkb,
                 destroy_rkb = 1;
         }
 
-        rd_list_init(&q_topics, rd_list_cnt(topics), rd_free);
-
-        if (!force) {
-
-                /* Hint cache of upcoming MetadataRequest and filter
-                 * out any topics that are already being requested.
-                 * q_topics will contain remaining topics to query. */
-                rd_kafka_metadata_cache_hint(rk, topics, &q_topics,
-                                             RD_KAFKA_RESP_ERR__WAIT_CACHE,
-                                             rd_false/*dont replace*/);
-                rd_kafka_wrunlock(rk);
-
-                if (rd_list_cnt(&q_topics) == 0) {
-                        /* No topics need new query. */
-                        rd_kafka_dbg(rk, METADATA, "METADATA",
-                                     "Skipping metadata refresh of "
-                                     "%d topic(s): %s: "
-                                     "already being requested",
-                                     rd_list_cnt(topics), reason);
-                        rd_list_destroy(&q_topics);
-                        if (destroy_rkb)
-                                rd_kafka_broker_destroy(rkb);
-                        return RD_KAFKA_RESP_ERR_NO_ERROR;
-                }
-
-        } else {
-                rd_kafka_wrunlock(rk);
-                rd_list_copy_to(&q_topics, topics, rd_list_string_copy, NULL);
-        }
+        rd_kafka_wrunlock(rk);
 
         rd_kafka_dbg(rk, METADATA, "METADATA",
                      "Requesting metadata for %d/%d topics: %s",
