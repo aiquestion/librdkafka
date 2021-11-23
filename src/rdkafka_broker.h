@@ -592,4 +592,9 @@ void rd_kafka_broker_monitor_del(rd_kafka_broker_monitor_t *rkbmon);
 
 int unittest_broker(void);
 
+void rd_kafka_mk_nodename(char *dest,
+                          size_t dsize,
+                          const char *name,
+                          uint16_t port);
+
 #endif /* _RDKAFKA_BROKER_H_ */

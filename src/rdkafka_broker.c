@@ -134,10 +134,10 @@ static void rd_kafka_broker_trigger_monitors(rd_kafka_broker_t *rkb);
 /**
  * Construct broker nodename.
  */
-static void rd_kafka_mk_nodename(char *dest,
-                                 size_t dsize,
-                                 const char *name,
-                                 uint16_t port) {
+void rd_kafka_mk_nodename(char *dest,
+                          size_t dsize,
+                          const char *name,
+                          uint16_t port) {
         rd_snprintf(dest, dsize, "%s:%hu", name, port);
 }
 
@@ -3015,12 +3015,14 @@ rd_kafka_broker_op_serve(rd_kafka_broker_t *rkb, rd_kafka_op_t *rko) {
                         rd_kafka_set_thread_sysname("rdk:broker%" PRId32,
                                                     rkb->rkb_nodeid);
 
-                        /* Update broker_by_id sorted list */
-                        if (old_nodeid == -1)
-                                rd_list_add(&rkb->rkb_rk->rk_broker_by_id, rkb);
-                        rd_list_sort(&rkb->rkb_rk->rk_broker_by_id,
-                                     rd_kafka_broker_cmp_by_id);
-
+                        // do not add rkb back to broker_by_id if terminating
+                        if (!rd_kafka_broker_terminating(rkb)) {
+                                /* Update broker_by_id sorted list */
+                                if (old_nodeid == -1)
+                                        rd_list_add(&rkb->rkb_rk->rk_broker_by_id, rkb);
+                                rd_list_sort(&rkb->rkb_rk->rk_broker_by_id,
+                                             rd_kafka_broker_cmp_by_id);
+                        }
                         updated |= _UPD_ID;
                 }
 
@@ -3045,17 +3047,20 @@ rd_kafka_broker_op_serve(rd_kafka_broker_t *rkb, rd_kafka_op_t *rko) {
                                              RD_KAFKA_RESP_ERR__TRANSPORT,
                                              "Broker hostname updated");
                 else if (updated & _UPD_ID) {
-                        /* Map existing partitions to this broker. */
-                        rd_kafka_broker_map_partitions(rkb);
+                        // do not add rkb back to broker_by_id if terminating
+                        if (!rd_kafka_broker_terminating(rkb)) {
+                                /* Map existing partitions to this broker. */
+                                rd_kafka_broker_map_partitions(rkb);
 
-                        /* If broker is currently in state up we need
-                         * to trigger a state change so it exits its
-                         * state&type based .._serve() loop. */
-                        rd_kafka_broker_lock(rkb);
-                        if (rkb->rkb_state == RD_KAFKA_BROKER_STATE_UP)
-                                rd_kafka_broker_set_state(
-                                    rkb, RD_KAFKA_BROKER_STATE_UPDATE);
-                        rd_kafka_broker_unlock(rkb);
+                                /* If broker is currently in state up we need
+                                * to trigger a state change so it exits its
+                                * state&type based .._serve() loop. */
+                                rd_kafka_broker_lock(rkb);
+                                if (rkb->rkb_state == RD_KAFKA_BROKER_STATE_UP)
+                                        rd_kafka_broker_set_state(
+                                            rkb, RD_KAFKA_BROKER_STATE_UPDATE);
+                                rd_kafka_broker_unlock(rkb);
+                        }
                 }
 
                 rd_kafka_brokers_broadcast_state_change(rkb->rkb_rk);
@@ -3085,6 +3090,7 @@ rd_kafka_broker_op_serve(rd_kafka_broker_t *rkb, rd_kafka_op_t *rko) {
 
                 /* Abort join if instance is terminating */
                 if (rd_kafka_terminating(rkb->rkb_rk) ||
+                    rd_kafka_broker_terminating(rkb) ||
                     (rktp->rktp_flags & RD_KAFKA_TOPPAR_F_REMOVE)) {
                         rd_rkb_dbg(rkb, BROKER | RD_KAFKA_DBG_TOPIC, "TOPBRK",
                                    "Topic %s [%" PRId32
@@ -3094,6 +3100,8 @@ rd_kafka_broker_op_serve(rd_kafka_broker_t *rkb, rd_kafka_op_t *rko) {
                                    rktp->rktp_partition,
                                    rd_kafka_terminating(rkb->rkb_rk)
                                        ? "instance is terminating"
+                                       : rd_kafka_broker_terminating(rkb)
+                                       ? "broker is teminating"
                                        : "partition removed");
 
                         rd_kafka_broker_destroy(rktp->rktp_next_broker);

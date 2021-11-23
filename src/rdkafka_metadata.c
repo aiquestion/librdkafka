@@ -545,6 +545,95 @@ rd_kafka_resp_err_t rd_kafka_parse_Metadata(rd_kafka_broker_t *rkb,
                 }
         }
 
+        // terminate broker that are:
+        // no longer in metadata list and not leader for any topic/partition
+        rd_list_t wait_thrds;
+        rd_list_init(&wait_thrds, rd_atomic32_get(&rk->rk_broker_cnt), NULL);
+        thrd_t *thrd;
+        rd_kafka_broker_t *t_rkb, *rkb_tmp;
+        rd_kafka_wrlock(rk);
+        TAILQ_FOREACH_SAFE(t_rkb, &rk->rk_brokers, rkb_link, rkb_tmp) {
+                // if terminating, skip this
+                if (rd_atomic32_get(&rk->rk_terminate))
+                        continue;
+
+                if (t_rkb->rkb_source == RD_KAFKA_INTERNAL)
+                        continue;
+                rd_kafka_wrunlock(rk);
+
+                // quick lock t_rkb to get a nodename&id safe
+                rd_kafka_broker_lock(t_rkb);
+                int32_t rkb_id = t_rkb->rkb_nodeid;
+                char* rkb_nodename = strdup(t_rkb->rkb_nodename);
+                rd_kafka_broker_unlock(t_rkb);
+
+                int32_t should_keep = 0;
+                // check broker id not in broker list, this is not accurate,
+                // use id will be faster than nodename, so check this first
+                for (i = 0; i < md->broker_cnt; i++) {
+                        if (rkb_id == md->brokers[i].id) {
+                                should_keep = 1;
+                                break;
+                        }
+                }
+
+                // use host and port to check if broker is in
+                if (!should_keep) {
+                        for (i = 0; i < md->broker_cnt; i++) {
+                                char nodename[RD_KAFKA_NODENAME_SIZE];
+                                rd_kafka_mk_nodename(nodename, sizeof(nodename),
+                                                     md->brokers[i].host, md->brokers[i].port);
+                                if (!strcmp(rkb_nodename, nodename)) {
+                                        should_keep = 1;
+                                        break;
+                                }
+                        }
+                }
+
+                // check broker not leader
+                if (!should_keep) {
+                        for (i = 0; i < md->topic_cnt; i++) {
+                                if (should_keep) {
+                                        break;
+                                }
+                                rd_kafka_metadata_topic_t *mdt = &md->topics[i];
+                                for (j = 0; j < mdt->partition_cnt; j++) {
+                                        if (t_rkb->rkb_nodeid == mdt->partitions[j].leader) {
+                                                should_keep = 1;
+                                                break;
+                                        }
+                                }
+                        }
+                }
+                // only terminate broker if it's only ref by main/itself
+                // so no topic-partition is transferring from(to) it
+                if (!should_keep && rd_refcnt_get(&(t_rkb)->rkb_refcnt) == 2) {
+                        rd_kafka_log(rk, LOG_INFO, "METADATA",
+                                     "rd_kafka metadata do not contains %s anymore "
+                                     "close it!\n", rkb_nodename);
+                        thrd = malloc(sizeof(*thrd));
+                        *thrd = t_rkb->rkb_thread;
+                        rd_list_add(&wait_thrds, thrd);
+                        rd_kafka_q_enq(t_rkb->rkb_ops, rd_kafka_op_new(RD_KAFKA_OP_TERMINATE));
+                        if (rk->rk_conf.term_sig)
+                                pthread_kill(t_rkb->rkb_thread, rk->rk_conf.term_sig);
+                        rd_kafka_broker_destroy(t_rkb);
+                }
+
+                free(rkb_nodename);
+
+                rd_kafka_wrlock(rk);
+        }
+        rd_kafka_wrunlock(rk);
+
+        /* Join terminating broker threads */
+        RD_LIST_FOREACH(thrd, &wait_thrds, i) {
+                if (thrd_join(*thrd, NULL) != thrd_success)
+                        ;
+                free(thrd);
+        }
+        rd_list_destroy(&wait_thrds);
+
 
         rd_kafka_wrlock(rkb->rkb_rk);
 
