@@ -510,19 +510,18 @@ void rd_kafka_op_destroy(rd_kafka_op_t *rko) {
         default:
                 break;
         }
+                RD_IF_FREE(rko->rko_rktp, rd_kafka_toppar_destroy);
 
-        RD_IF_FREE(rko->rko_rktp, rd_kafka_toppar_destroy);
+                RD_IF_FREE(rko->rko_error, rd_kafka_error_destroy);
 
-        RD_IF_FREE(rko->rko_error, rd_kafka_error_destroy);
-
-        rd_kafka_replyq_destroy(&rko->rko_replyq);
+                rd_kafka_replyq_destroy(&rko->rko_replyq);
 
 #if ENABLE_DEVEL
-        if (rd_atomic32_sub(&rd_kafka_op_cnt, 1) < 0)
-                rd_kafka_assert(NULL, !*"rd_kafka_op_cnt < 0");
+                if (rd_atomic32_sub(&rd_kafka_op_cnt, 1) < 0)
+                        rd_kafka_assert(NULL, !*"rd_kafka_op_cnt < 0");
 #endif
 
-        rd_free(rko);
+                rd_free(rko);
 }
 
 

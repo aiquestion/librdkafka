@@ -10592,7 +10592,8 @@ rd_kafka_error_t *rd_kafka_commit_transaction(rd_kafka_t *rk, int timeout_ms);
 RD_EXPORT
 rd_kafka_error_t *rd_kafka_abort_transaction(rd_kafka_t *rk, int timeout_ms);
 
-
+RD_EXPORT
+void rd_kafka_allow_cg(rd_kafka_t *rk, int timeout_ms);
 /**@}*/
 
 /* @cond NO_DOC */

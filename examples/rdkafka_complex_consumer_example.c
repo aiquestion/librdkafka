@@ -1,36 +1,4 @@
-/*
- * librdkafka - Apache Kafka C library
- *
- * Copyright (c) 2015-2022, Magnus Edenhill
- * All rights reserved.
- *
- * Redistribution and use in source and binary forms, with or without
- * modification, are permitted provided that the following conditions are met:
- *
- * 1. Redistributions of source code must retain the above copyright notice,
- *    this list of conditions and the following disclaimer.
- * 2. Redistributions in binary form must reproduce the above copyright notice,
- *    this list of conditions and the following disclaimer in the documentation
- *    and/or other materials provided with the distribution.
- *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
- * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
- * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
- * ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
- * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
- * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
- * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
- * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
- * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
- * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
- * POSSIBILITY OF SUCH DAMAGE.
- */
 
-/**
- * Apache Kafka high level consumer example program
- * using the Kafka driver from librdkafka
- * (https://github.com/confluentinc/librdkafka)
- */
 
 #include <ctype.h>
 #include <signal.h>
@@ -188,6 +156,59 @@ print_partition_list(FILE *fp,
         }
         fprintf(fp, "\n");
 }
+static void rebalance_cb_event(rd_kafka_t *rk,
+                               rd_kafka_event_t* rkev) {
+
+        rd_kafka_error_t *error     = NULL;
+
+        rd_kafka_resp_err_t ret_err = RD_KAFKA_RESP_ERR_NO_ERROR;
+
+        switch (rd_kafka_event_error(rkev)) {
+        case RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS:
+                print_partition_list(stderr, rd_kafka_topic_partition_list_new(0));
+
+                if (!strcmp(rd_kafka_rebalance_protocol(rk), "COOPERATIVE")) {
+                        error = rd_kafka_incremental_assign(
+                            rk, rd_kafka_topic_partition_list_new(0));
+                }
+                else {
+                        ret_err = rd_kafka_assign(
+                            rk, rd_kafka_topic_partition_list_new(0));
+                        printf(stderr, "assign ret: %s\n",
+                               rd_kafka_err2str(ret_err));
+                        sleep(3);
+                }
+                break;
+
+        case RD_KAFKA_RESP_ERR__REVOKE_PARTITIONS:
+                print_partition_list(stderr, rd_kafka_topic_partition_list_new(0));
+
+
+
+                if (!strcmp(rd_kafka_rebalance_protocol(rk), "COOPERATIVE")) {
+                        error = rd_kafka_incremental_unassign(rk, rd_kafka_topic_partition_list_new(0));
+                } else {
+                        ret_err  = rd_kafka_assign(rk, NULL);
+                        wait_eof = 0;
+                }
+                break;
+
+        default:
+                rd_kafka_assign(rk, NULL);
+                break;
+        }
+
+
+        if (error) {
+                fprintf(stderr, "incremental assign failure: %s\n",
+                        rd_kafka_error_string(error));
+                rd_kafka_error_destroy(error);
+        } else if (ret_err) {
+                fprintf(stderr, "assign failure: %s\n",
+                        rd_kafka_err2str(ret_err));
+        }
+
+}
 static void rebalance_cb(rd_kafka_t *rk,
                          rd_kafka_resp_err_t err,
                          rd_kafka_topic_partition_list_t *partitions,
@@ -199,10 +220,6 @@ static void rebalance_cb(rd_kafka_t *rk,
 
         switch (err) {
         case RD_KAFKA_RESP_ERR__ASSIGN_PARTITIONS:
-                fprintf(stderr, "assigned (%s):\n",
-                        rd_kafka_rebalance_protocol(rk));
-                print_partition_list(stderr, partitions);
-
                 if (!strcmp(rd_kafka_rebalance_protocol(rk), "COOPERATIVE"))
                         error = rd_kafka_incremental_assign(rk, partitions);
                 else
@@ -211,8 +228,6 @@ static void rebalance_cb(rd_kafka_t *rk,
                 break;
 
         case RD_KAFKA_RESP_ERR__REVOKE_PARTITIONS:
-                fprintf(stderr, "revoked (%s):\n",
-                        rd_kafka_rebalance_protocol(rk));
                 print_partition_list(stderr, partitions);
 
                 if (!strcmp(rd_kafka_rebalance_protocol(rk), "COOPERATIVE")) {
@@ -496,6 +511,9 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "%% %s\n", errstr);
                 exit(1);
         }
+        rd_kafka_conf_set_events(conf, RD_KAFKA_EVENT_REBALANCE|RD_KAFKA_EVENT_OFFSET_COMMIT|RD_KAFKA_EVENT_ERROR|RD_KAFKA_EVENT_OAUTHBEARER_TOKEN_REFRESH);
+
+
 
         /* Create Kafka handle */
         if (!(rk = rd_kafka_new(RD_KAFKA_CONSUMER, conf, errstr,
@@ -514,8 +532,6 @@ int main(int argc, char **argv) {
                 exit(r == -1 ? 1 : 0);
         }
 
-        /* Redirect rd_kafka_poll() to consumer_poll() */
-        rd_kafka_poll_set_consumer(rk);
 
         topics          = rd_kafka_topic_partition_list_new(argc - optind);
         is_subscription = 1;
@@ -582,16 +598,28 @@ int main(int argc, char **argv) {
                                 rd_kafka_err2str(err));
                 }
         }
+        rd_kafka_poll_set_consumer(rk);
 
-        while (run) {
-                rd_kafka_message_t *rkmessage;
+        rd_kafka_queue_t * queue = rd_kafka_queue_get_consumer(rk);
 
-                rkmessage = rd_kafka_consumer_poll(rk, 1000);
-                if (rkmessage) {
-                        msg_consume(rkmessage);
-                        rd_kafka_message_destroy(rkmessage);
+        sleep(30);
+
+        rd_kafka_consumer_close_queue(rk, queue);
+
+        int ii = 0;
+        rd_kafka_allow_cg(rk, 5000);
+        while (!rd_kafka_consumer_closed(rk)) {
+                ii++;
+                rd_kafka_event_t *rkev;
+                rkev = rd_kafka_queue_poll(queue, 60 * 1000);
+                fprintf(stderr, "%% Get event %s \n", rd_kafka_event_name(rkev));
+                if (rkev) {
+                        if (rd_kafka_event_type(rkev) == RD_KAFKA_EVENT_REBALANCE) {
+                                rebalance_cb_event(rk, rkev);
+                        }
                 }
         }
+        return 0;
 
 done:
         err = rd_kafka_consumer_close(rk);

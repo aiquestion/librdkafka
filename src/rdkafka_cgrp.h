@@ -345,6 +345,7 @@ typedef struct rd_kafka_cgrp_s {
                                              * of last rebalance
                                              * assignment */
         } rkcg_c;
+        rd_atomic64_t rkcg_allow_ts;
 
         /* Timestamp of last rebalance start */
         rd_ts_t rkcg_ts_rebalance_start;

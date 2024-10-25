@@ -476,6 +476,7 @@ rd_kafka_cgrp_t *rd_kafka_cgrp_new(rd_kafka_t *rk,
         rd_interval_init(&rkcg->rkcg_timeout_scan_intvl);
         rd_atomic32_init(&rkcg->rkcg_assignment_lost, rd_false);
         rd_atomic32_init(&rkcg->rkcg_terminated, rd_false);
+        rd_atomic64_init(&rkcg->rkcg_allow_ts, 0);
         rkcg->rkcg_current_assignment = rd_kafka_topic_partition_list_new(0);
         rkcg->rkcg_target_assignment  = NULL;
         rkcg->rkcg_next_target_assignment = NULL;
@@ -3181,6 +3182,8 @@ void rd_kafka_cgrp_handle_Heartbeat(rd_kafka_t *rk,
                 rd_kafka_buf_read_throttle_time(rkbuf);
 
         rd_kafka_buf_read_i16(rkbuf, &ErrorCode);
+        err = RD_KAFKA_RESP_ERR_UNKNOWN_MEMBER_ID;
+        goto err;
         if (ErrorCode) {
                 err = ErrorCode;
                 goto err;
@@ -3337,6 +3340,10 @@ static void rd_kafka_cgrp_terminated(rd_kafka_cgrp_t *rkcg) {
          * This prevents hang on destroy where responses are enqueued on
          * rkcg_ops without anything serving the queue. */
         rd_kafka_q_disable(rkcg->rkcg_ops);
+        // handle all rkcg_ops
+//        rd_kafka_q_serve(rkcg->rkcg_ops, RD_POLL_INFINITE, 0,
+//                         RD_KAFKA_Q_CB_CALLBACK, NULL, NULL);
+
         rd_kafka_q_purge(rkcg->rkcg_ops);
 
         if (rkcg->rkcg_curr_coord)
@@ -6259,6 +6266,13 @@ void rd_kafka_cgrp_serve(rd_kafka_cgrp_t *rkcg) {
         }
 
         now = rd_clock();
+        rd_ts_t allow_ts = rd_atomic64_get(&rkcg->rkcg_allow_ts);
+        if (allow_ts > 0 && now < allow_ts) {
+                rd_kafka_dbg(
+                    rkcg->rkcg_rk, CGRP, "CGRPOP",
+                    "### NOT Allow group operation");
+                return;
+        }
 
         /* Check for cgrp termination */
         if (unlikely(rd_kafka_cgrp_try_terminate(rkcg))) {
@@ -6564,9 +6578,13 @@ static rd_kafka_op_res_t rd_kafka_cgrp_op_serve(rd_kafka_t *rk,
                 rko->rko_u.rebalance_protocol.str =
                     rd_kafka_rebalance_protocol2str(
                         rd_kafka_cgrp_rebalance_protocol(rkcg));
+                rd_kafka_dbg(
+                    rkcg->rkcg_rk, CGRP, "CGRPOP",
+                    "###Allow group operation now");
+                rd_kafka_allow_cg(rk, -1);
                 rd_kafka_op_reply(rko, RD_KAFKA_RESP_ERR_NO_ERROR);
                 rko = NULL;
-                break;
+                return RD_KAFKA_OP_RES_YIELD;
 
         case RD_KAFKA_OP_TERMINATE:
                 rd_kafka_cgrp_terminate0(rkcg, rko);

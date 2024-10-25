@@ -2152,8 +2152,10 @@ static int rd_kafka_thread_main(void *arg) {
                 /* Use ceiling division to avoid calling serve with a 0 ms
                  * timeout in a tight loop until 1 ms has passed. */
                 int timeout_ms = (sleeptime + 999) / 1000;
-                rd_kafka_q_serve(rk->rk_ops, timeout_ms, 0,
+                int cnt = rd_kafka_q_serve(rk->rk_ops, timeout_ms, 1,
                                  RD_KAFKA_Q_CB_CALLBACK, NULL, NULL);
+                rd_kafka_dbg(rk, GENERIC, "AAAAA",
+                             "@@@@@ handle %d\n", cnt);
                 if (rk->rk_cgrp) /* FIXME: move to timer-triggered */
                         rd_kafka_cgrp_serve(rk->rk_cgrp);
                 rd_kafka_timers_run(&rk->rk_timers, RD_POLL_NOWAIT);
@@ -5348,4 +5350,7 @@ int64_t rd_kafka_Uuid_least_significant_bits(const rd_kafka_Uuid_t *uuid) {
 
 int64_t rd_kafka_Uuid_most_significant_bits(const rd_kafka_Uuid_t *uuid) {
         return uuid->most_significant_bits;
+}
+void rd_kafka_allow_cg(rd_kafka_t *rk, int timeout_ms){
+        rd_atomic64_set(&rk->rk_cgrp->rkcg_allow_ts, rd_clock()+1000*timeout_ms);
 }
